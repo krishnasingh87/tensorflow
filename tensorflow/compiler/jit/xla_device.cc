@@ -102,7 +102,8 @@ XlaDeviceAllocator* XlaDeviceAllocatorState::GetOrCreateXlaDeviceAllocator(
   }
 
   std::unique_ptr<XlaDeviceAllocator> alloc =
-      absl::make_unique<XlaDeviceAllocator>();
+      absl::make_unique<XlaDeviceAllocator>(
+          backend->stream_executors()[device_ordinal]);
   XlaDeviceAllocator* alloc_ptr = alloc.get();
   state.allocators_[{backend, device_ordinal}] = std::move(alloc);
   return alloc_ptr;
@@ -428,7 +429,7 @@ void XlaDevice::Sync(const DoneCallback& done) {
   // moment--when ThenEnqueueOnBackgroundThread is called--will have finished.
   // This achieves a device-wide sync.
   stream->ThenEnqueueOnBackgroundThread(
-      [this, stream, done](se::StreamExecutor*) {
+      [stream, done](se::StreamExecutor*) {
         tracing::ScopedActivity activity("XlaDevice::Sync::Callback",
                                          /*is_expensive=*/true);
         done(stream->ok() ? Status::OK()

@@ -252,7 +252,7 @@ TEST_F(ShapeInferenceTest, ClampBadShapes) {
 
 TEST_F(ShapeInferenceTest, Complex) {
   auto complex_shape = [&](const Shape& lhs, const Shape& rhs,
-                           const absl::Span<const int64>& bcast) {
+                           absl::Span<const int64> bcast) {
     return ShapeInference::InferBinaryOpShape(HloOpcode::kComplex, lhs, rhs,
                                               bcast);
   };
@@ -1481,6 +1481,14 @@ TEST_F(ShapeInferenceTest, Pad) {
   Shape inferred_shape = inferred_status.ValueOrDie();
   ASSERT_TRUE(
       ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {39, 31}), inferred_shape));
+
+  dimension1->set_edge_padding_low(-20);
+  dimension1->set_edge_padding_high(-10);
+  auto negative_dimension_size = ShapeInference::InferPadShape(
+      input_shape, padding_value_shape, padding_config);
+  ASSERT_FALSE(negative_dimension_size.ok());
+  ASSERT_THAT(negative_dimension_size.status().error_message(),
+              HasSubstr("negative size for dimension 1"));
 }
 
 TEST_F(ShapeInferenceTest, Reverse) {
@@ -1562,6 +1570,16 @@ TEST_F(ShapeInferenceTest, Transpose) {
   Shape inferred_shape = inferred_shape_and_status.ValueOrDie();
   EXPECT_TRUE(ShapeUtil::Compatible(inferred_shape,
                                     ShapeUtil::MakeShape(F32, {3, 4, 5, 2})));
+}
+
+TEST_F(ShapeInferenceTest, Rank1Transpose) {
+  Shape a_shape = ShapeUtil::MakeShape(F32, {5});
+  auto inferred_shape_and_status =
+      ShapeInference::InferTransposeShape(a_shape, {0});
+  EXPECT_IS_OK(inferred_shape_and_status);
+  Shape inferred_shape = inferred_shape_and_status.ValueOrDie();
+  EXPECT_TRUE(
+      ShapeUtil::Compatible(inferred_shape, ShapeUtil::MakeShape(F32, {5})));
 }
 
 TEST_F(ShapeInferenceTest, Conditional) {

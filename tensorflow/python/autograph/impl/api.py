@@ -90,7 +90,7 @@ def convert(
               verbose=verbose,
               force_conversion=True,
               optional_features=optional_features,
-          ), *args, **kwargs)
+          ), args, kwargs)
 
     wrapper = tf_decorator.make_decorator(f, wrapper)
 
@@ -114,6 +114,12 @@ class RunMode(Enum):
   """
   GRAPH = 1
   PY_FUNC = 2
+
+
+def do_not_convert_internal(f):
+  """Decorator that marks internal functions which do not need conversion."""
+  setattr(f, '__ag_compiled', True)
+  return f
 
 
 def do_not_convert(run_as=RunMode.GRAPH, return_dtypes=None):
@@ -154,15 +160,13 @@ def do_not_convert(run_as=RunMode.GRAPH, return_dtypes=None):
     else:
       raise ValueError('unknown value for run_as: %s' % run_as)
 
-    # Sometimes the decorator is just desugared, making it impossible to detect.
-    # This attribute makes detection easier.
     setattr(wrapper, '__ag_compiled', True)
     return wrapper
 
   return decorator
 
 
-def converted_call(f, owner, options, *args, **kwargs):
+def converted_call(f, owner, options, args, kwargs):
   """Compiles a function call inline. For internal use only."""
   logging.log(1,
               'Converted call: %s; owner: %s\n    args: %s\n    kwargs: %s\n',
@@ -194,6 +198,13 @@ def converted_call(f, owner, options, *args, **kwargs):
         ' by AutoGraph. The function will be called without transformation.'
         ' You may however apply AutoGraph before the decorator.'.format(f), 1)
     logging.log(2, 'Permanently whitelisted: %s: wrapt decorated', f)
+    return f(*args, **kwargs)
+
+  # Constructors are permanently whitelisted.
+  # TODO(mdan): Toggle as experimental feature instead.
+  # TODO(b/124016764): Remove this limitation.
+  if tf_inspect.isclass(f):
+    logging.log(2, 'Permanently whitelisted: %s: constructor', f)
     return f(*args, **kwargs)
 
   # Other built-in modules are permanently whitelisted.
@@ -276,6 +287,9 @@ def converted_call(f, owner, options, *args, **kwargs):
 
     elif tf_inspect.isclass(f):
       # Constructors
+      # Note: Until we support class constructurs, and enable whole-class
+      # conversion with an experimental flag, this branch is dead code.
+      # TODO(mdan): Consider removing unless there is a compelling use case.
       target_entity = f
       arg_map_target = f.__init__
       effective_args = args
@@ -337,8 +351,8 @@ def converted_call(f, owner, options, *args, **kwargs):
     logging.warn(
         'Entity %s could not be transformed and will be staged without change.'
         ' Error details can be found in the logs when running with the env'
-        ' variable AUTOGRAPH_VERBOSITY=5. Please report this to the AutoGraph'
-        ' team. Cause: %s', target_entity, e)
+        ' variable AUTOGRAPH_VERBOSITY >= 1. Please report this to the'
+        ' AutoGraph team. Cause: %s', target_entity, e)
 
     return f(*args, **kwargs)
 
