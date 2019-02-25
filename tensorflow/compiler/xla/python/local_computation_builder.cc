@@ -443,6 +443,8 @@ StatusOr<Shape> ComputationBuilder::GetReturnValueShape() {
   return program_shape.result();
 }
 
+LocalOp ComputationBuilder::ReplicaId() { return xla::ReplicaId(&builder_); }
+
 LocalOp ComputationBuilder::Infeed(const Shape& shape) {
   return xla::Infeed(&builder_, shape);
 }
@@ -799,6 +801,7 @@ _FORWARD_BINOP(Atan2)
 _FORWARD_BINOP(Pow)
 _FORWARD_BINOP(Complex)
 _FORWARD_UNOP(Not)
+_FORWARD_UNOP(Clz)
 _FORWARD_UNOP(Abs)
 _FORWARD_UNOP(Exp)
 _FORWARD_UNOP(Expm1)

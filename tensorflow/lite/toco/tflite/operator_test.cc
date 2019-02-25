@@ -113,6 +113,7 @@ class OperatorTest : public ::testing::Test {
 TEST_F(OperatorTest, SimpleOperators) {
   CheckSimpleOperator<FloorOperator>("FLOOR", OperatorType::kFloor);
   CheckSimpleOperator<CeilOperator>("CEIL", OperatorType::kCeil);
+  CheckSimpleOperator<EluOperator>("ELU", OperatorType::kElu);
   CheckSimpleOperator<ReluOperator>("RELU", OperatorType::kRelu);
   CheckSimpleOperator<Relu1Operator>("RELU_N1_TO_1", OperatorType::kRelu1);
   CheckSimpleOperator<Relu6Operator>("RELU6", OperatorType::kRelu6);
@@ -602,26 +603,6 @@ TEST_F(OperatorTest, BuiltinLeakyRelu) {
   EXPECT_EQ(op.alpha, output_toco_op->alpha);
 }
 
-TEST_F(OperatorTest, VersioningLogisticTest) {
-  LogisticOperator logistic_op;
-  logistic_op.inputs = {"input1"};
-  auto operator_by_type_map = BuildOperatorByTypeMap(false /*enable_flex_ops*/);
-  const BaseOperator* op = operator_by_type_map.at(logistic_op.type).get();
-
-  Model uint8_model;
-  Array& uint8_array = uint8_model.GetOrCreateArray(logistic_op.inputs[0]);
-  uint8_array.data_type = ArrayDataType::kUint8;
-  OperatorSignature uint8_signature = {.model = &uint8_model,
-                                       .op = &logistic_op};
-  EXPECT_EQ(op->GetVersion(uint8_signature), 1);
-
-  Model int8_model;
-  Array& int8_array = int8_model.GetOrCreateArray(logistic_op.inputs[0]);
-  int8_array.data_type = ArrayDataType::kInt8;
-  OperatorSignature int8_signature = {.model = &int8_model, .op = &logistic_op};
-  EXPECT_EQ(op->GetVersion(int8_signature), 2);
-}
-
 TEST_F(OperatorTest, BuiltinSquaredDifference) {
   SquaredDifferenceOperator op;
   auto output_toco_op = SerializeAndDeserialize(
@@ -751,6 +732,17 @@ TEST_F(OperatorTest, BuiltinUnique) {
   EXPECT_EQ(output_toco_op->idx_out_type, op.idx_out_type);
 }
 
+TEST_F(OperatorTest, BuiltinReverseSequence) {
+  ReverseSequenceOperator op;
+  op.seq_dim = 3;
+  op.batch_dim = 1;
+  std::unique_ptr<toco::ReverseSequenceOperator> output_toco_op =
+      SerializeAndDeserialize(
+          GetOperator("REVERSE_SEQUENCE", OperatorType::kReverseSequence), op);
+  EXPECT_EQ(op.seq_dim, output_toco_op->seq_dim);
+  EXPECT_EQ(op.batch_dim, output_toco_op->batch_dim);
+}
+
 // Test version for a simple Op with 2 versions and the input type controls the
 // version.
 template <typename Op>
@@ -827,6 +819,10 @@ TEST_F(OperatorTest, VersioningSpaceToDepthTest) {
 
 TEST_F(OperatorTest, VersioningSliceTest) {
   SimpleVersioningTest<SliceOperator>();
+}
+
+TEST_F(OperatorTest, VersioningLogisticTest) {
+  SimpleVersioningTest<LogisticOperator>();
 }
 
 TEST_F(OperatorTest, VersioningAddTest) { SimpleVersioningTest<AddOperator>(); }

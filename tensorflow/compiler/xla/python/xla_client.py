@@ -285,6 +285,7 @@ def _convert_padding_type_to_pad_values(padding_type, lhs_dims, rhs_dims,
 
 _UNARY_OPS = [
     'Not',
+    'Clz',
     'Abs',
     'Exp',
     'Expm1',
@@ -1134,6 +1135,14 @@ class ComputationBuilder(object):
 
   def GetComputationStats(self):
     raise NotImplementedError()
+
+  def ReplicaId(self):
+    """Enqueues a ReplicaId operation onto the computation.
+
+    Returns:
+      A LocalOp representing the replica id.
+    """
+    return self._client.ReplicaId()
 
   def Pad(self, operand, padding_value, padding_config):
     """Enqueues a Pad operation onto the computation.
