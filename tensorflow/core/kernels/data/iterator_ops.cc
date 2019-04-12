@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/iterator_ops.h"
 
+#include <memory>
+
 #include "absl/memory/memory.h"
 #include "tensorflow/core/common_runtime/graph_runner.h"
 #include "tensorflow/core/common_runtime/renamed_device.h"
@@ -26,8 +28,10 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/variant_op_registry.h"
 #include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/core/kernels/data/captured_function.h"
 #include "tensorflow/core/kernels/data/dataset_utils.h"
 #include "tensorflow/core/kernels/data/optional_ops.h"
+#include "tensorflow/core/kernels/data/unbounded_thread_pool.h"
 #include "tensorflow/core/kernels/ops_util.h"
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
@@ -51,14 +55,15 @@ const char kIteratorVariantTypeName[] = "tensorflow::Iterator";
 
 class IteratorResource : public ResourceBase {
  public:
-  IteratorResource(const DataTypeVector& output_dtypes,
+  IteratorResource(Env* env, const DataTypeVector& output_dtypes,
                    const std::vector<PartialTensorShape>& output_shapes,
                    const int /*unused: graph_def_version*/,
                    std::unique_ptr<DeviceMgr> device_mgr,
                    std::unique_ptr<FunctionLibraryDefinition> flib_def,
                    std::unique_ptr<ProcessFunctionLibraryRuntime> pflr,
                    FunctionLibraryRuntime* lib)
-      : device_mgr_(std::move(device_mgr)),
+      : unbounded_thread_pool_(env, "tf_data_iterator_resource"),
+        device_mgr_(std::move(device_mgr)),
         iterator_state_(std::make_shared<State>(
             std::move(flib_def), std::move(pflr), lib, nullptr /* iterator */)),
         output_dtypes_(output_dtypes),
@@ -77,6 +82,7 @@ class IteratorResource : public ResourceBase {
       params.function_handle_cache =
           captured_state->function_handle_cache.get();
       params.resource_mgr = &captured_state->resource_mgr;
+      params.thread_factory = unbounded_thread_pool_.get_thread_factory();
       return captured_state->iterator->GetNext(
           IteratorContext(std::move(params)), out_tensors, end_of_sequence);
     } else {
@@ -99,17 +105,7 @@ class IteratorResource : public ResourceBase {
       captured_state = iterator_state_;
     }
     if (captured_state) {
-      SerializationContext::Params params;
-      // The iterator state may contain functions that are not present
-      // in ctx's function library. Namely, an iterator may be restored from
-      // a serialized iterator with a modified function library (for example, as
-      // a result of OptimizeDataset). These modified functions are needed
-      // to serialize the iterator again.
-      params.flib_def = captured_state->flib_def.get();
-      params.input_list = ctx->input_list();
-      params.optimization_only = ctx->optimization_only();
-      SerializationContext ctx_with_functions(params);
-      return captured_state->iterator->Save(&ctx_with_functions, writer);
+      return captured_state->iterator->Save(ctx, writer);
     } else {
       return errors::FailedPrecondition(
           "Save() failed because the iterator has not been initialized. "
@@ -163,6 +159,8 @@ class IteratorResource : public ResourceBase {
     params.lib = new_state->lib;
     params.function_handle_cache = new_state->function_handle_cache.get();
     params.resource_mgr = &new_state->resource_mgr;
+    params.thread_factory = unbounded_thread_pool_.get_thread_factory();
+
     TF_RETURN_IF_ERROR(dataset->MakeIterator(IteratorContext(std::move(params)),
                                              "Iterator", &new_state->iterator));
     TF_RETURN_IF_ERROR(
@@ -179,6 +177,7 @@ class IteratorResource : public ResourceBase {
       params.allocator_getter = [device](AllocatorAttributes attrs) {
         return device->GetAllocator(attrs);
       };
+      params.thread_factory = unbounded_thread_pool_.get_thread_factory();
       IteratorContext iter_ctx(std::move(params));
       TF_RETURN_IF_ERROR(new_state->iterator->Restore(&iter_ctx, reader));
     }
@@ -233,6 +232,7 @@ class IteratorResource : public ResourceBase {
     params.lib = new_state->lib;
     params.function_handle_cache = new_state->function_handle_cache.get();
     params.resource_mgr = &new_state->resource_mgr;
+    params.thread_factory = unbounded_thread_pool_.get_thread_factory();
     TF_RETURN_IF_ERROR(dataset->MakeIterator(IteratorContext(std::move(params)),
                                              "Iterator", &iterator));
     TF_RETURN_IF_ERROR(
@@ -253,6 +253,66 @@ class IteratorResource : public ResourceBase {
   const std::vector<PartialTensorShape>& output_shapes() const {
     return output_shapes_;
   }
+
+  // This class is used to guarantee that an anonymous iterator is deleted
+  // (irrespective of whether the DeleteIteratorOp op is called explicitly or
+  // the execution encounters an error before the op runs).
+  //
+  // This is achieved by wrapping an instance of this class into a variant
+  // tensor which is passed as an input to the DeleteIteratorOp. If the
+  // execution encounters an error before the op runs, the tensor will be
+  // destroyed, essentially triggering the iterator deletion.
+  class Deleter {
+   public:
+    Deleter(ResourceHandle handle, ResourceMgr* resource_manager)
+        : deleter_(std::make_shared<Helper>(handle, resource_manager)) {}
+
+    Deleter(Deleter&& rhs) : deleter_(std::move(rhs.deleter_)) {
+      VLOG(3) << "IteratorResource::Deleter move constructor called.";
+    }
+
+    Deleter(const Deleter& rhs) : deleter_(rhs.deleter_) {
+      VLOG(3) << "IteratorResource::Deleter copy constructor called.";
+    }
+
+    virtual ~Deleter() {
+      VLOG(3) << "IteratorResource::Deleter destructor called.";
+    }
+
+    void Encode(VariantTensorData*) const {
+      // Not supported.
+    }
+
+    bool Decode(const VariantTensorData&) {
+      return false;  // Not supported.
+    }
+
+   private:
+    // Helper that performs reference counting for the parent class and deletes
+    // the iterator resource when the refcount goes to zero.
+    //
+    // NOTE: The object is borrowing a pointer to the resource manager.
+    // Consequently, the tensor containing this object should not escape the
+    // function in which was created (so that it is guaranteed that the resource
+    // manager will outlive it).
+    struct Helper {
+      Helper(ResourceHandle handle, ResourceMgr* resource_manager)
+          : handle(handle), resource_manager(resource_manager) {}
+
+      Helper(const Helper& rhs) = delete;
+      Helper(Helper&& rhs) = delete;
+
+      ~Helper() {
+        VLOG(3) << "Deleting IteratorResource: " << handle.DebugString();
+        resource_manager->Delete(handle).IgnoreError();
+      }
+
+      ResourceHandle handle;
+      ResourceMgr* resource_manager;  // not owned
+    };
+
+    std::shared_ptr<Helper> deleter_;
+  };
 
  private:
   struct State {
@@ -284,6 +344,7 @@ class IteratorResource : public ResourceBase {
     std::unique_ptr<IteratorBase> iterator;
   };
 
+  UnboundedThreadPool unbounded_thread_pool_;
   mutex mu_;
   const std::unique_ptr<DeviceMgr> device_mgr_ GUARDED_BY(mu_);
   std::shared_ptr<State> iterator_state_ GUARDED_BY(mu_);
@@ -328,9 +389,7 @@ class IteratorStateVariant {
   // that it can be written on the next call to Encode().
   Status InitializeFromIterator(OpKernelContext* ctx,
                                 IteratorResource* iterator_resource) {
-    SerializationContext::Params params;
-    params.flib_def = ctx->function_library()->GetFunctionLibraryDefinition();
-    SerializationContext serialization_ctx(params);
+    SerializationContext serialization_ctx({});
     data_ = absl::make_unique<VariantTensorData>();
     data_->set_type_name(TypeName());
     VariantTensorDataWriter writer(data_.get());
@@ -432,14 +491,14 @@ void IteratorHandleOp::Compute(OpKernelContext* context) LOCKS_EXCLUDED(mu_) {
           context,
           mgr->LookupOrCreate<IteratorResource>(
               cinfo_.container(), cinfo_.name(), &resource,
-              [lib, &device_mgr, &flib_def, &pflr, this](IteratorResource** ret)
-                  EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-                    *ret = new IteratorResource(
-                        output_dtypes_, output_shapes_, graph_def_version_,
-                        std::move(device_mgr), std::move(flib_def),
-                        std::move(pflr), lib);
-                    return Status::OK();
-                  }));
+              [context, lib, &device_mgr, &flib_def, &pflr,
+               this](IteratorResource** ret) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+                *ret = new IteratorResource(
+                    context->env(), output_dtypes_, output_shapes_,
+                    graph_def_version_, std::move(device_mgr),
+                    std::move(flib_def), std::move(pflr), lib);
+                return Status::OK();
+              }));
 
       Status s = VerifyResource(resource);
       if (TF_PREDICT_FALSE(!s.ok())) {
@@ -491,7 +550,9 @@ FunctionLibraryRuntime* IteratorHandleOp::CreatePrivateFLR(
 // running them.
 AnonymousIteratorHandleOp::AnonymousIteratorHandleOp(
     OpKernelConstruction* context)
-    : OpKernel(context), graph_def_version_(context->graph_def_version()) {
+    : OpKernel(context),
+      graph_def_version_(context->graph_def_version()),
+      op_version_(context->def().op() == "AnonymousIterator" ? 1 : 2) {
   OP_REQUIRES_OK(context, context->GetAttr("output_types", &output_dtypes_));
   OP_REQUIRES_OK(context, context->GetAttr("output_shapes", &output_shapes_));
 }
@@ -522,7 +583,7 @@ void AnonymousIteratorHandleOp::Compute(OpKernelContext* context) {
       existing_resource->Unref();
     }
     IteratorResource* new_resource = new IteratorResource(
-        output_dtypes_, output_shapes_, graph_def_version_,
+        context->env(), output_dtypes_, output_shapes_, graph_def_version_,
         std::move(device_mgr), std::move(flib_def), std::move(pflr), lib);
     // Create the resource with our chosen name under the resource lookup
     // mutex to avoid another kernel racily creating a resource with this
@@ -530,9 +591,20 @@ void AnonymousIteratorHandleOp::Compute(OpKernelContext* context) {
     OP_REQUIRES_OK(context, mgr->Create<IteratorResource>(
                                 container_name, unique_name, new_resource));
   }
-  OP_REQUIRES_OK(context, MakeResourceHandleToOutput(
-                              context, 0, container_name, unique_name,
-                              MakeTypeIndex<IteratorResource>()));
+  Tensor* handle_t;
+  OP_REQUIRES_OK(context,
+                 context->allocate_output(0, TensorShape({}), &handle_t));
+  ResourceHandle handle = MakeResourceHandle(
+      context, container_name, unique_name, MakeTypeIndex<IteratorResource>());
+  handle_t->scalar<ResourceHandle>()() = handle;
+
+  if (op_version_ == 2) {
+    Tensor* deleter_t;
+    OP_REQUIRES_OK(context,
+                   context->allocate_output(1, TensorShape({}), &deleter_t));
+    deleter_t->scalar<Variant>()() =
+        IteratorResource::Deleter(handle, context->resource_manager());
+  }
 }
 
 // Static initializers for AnonymousIteratorHandleOp id counting.
@@ -548,6 +620,14 @@ void MakeIteratorOp::Compute(OpKernelContext* ctx) {
       ctx, LookupResource(ctx, HandleFromInput(ctx, 1), &iterator_resource));
   core::ScopedUnref unref(iterator_resource);
   OP_REQUIRES_OK(ctx, iterator_resource->SetIteratorFromDataset(ctx, dataset));
+}
+
+void DeleteIteratorOp::Compute(OpKernelContext* ctx) {
+  ResourceHandle handle = ctx->input(0).flat<ResourceHandle>()(0);
+  // The iterator resource is guaranteed to exist because the variant tensor
+  // wrapping the deleter is provided as an unused input to this op, which
+  // guarantees that it has not run yet.
+  OP_REQUIRES_OK(ctx, ctx->resource_manager()->Delete(handle));
 }
 
 namespace {
@@ -636,6 +716,10 @@ class ReduceDatasetOp : public AsyncOpKernel {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("output_shapes", &output_shapes_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("use_inter_op_parallelism",
                                      &use_inter_op_parallelism_));
+    OP_REQUIRES_OK(ctx,
+                   CreateFunctionLibraryDefinition(
+                       ctx->function_library()->GetFunctionLibraryDefinition(),
+                       reduce_func_.name(), &lib_def_));
   }
 
   void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override {
@@ -652,10 +736,14 @@ class ReduceDatasetOp : public AsyncOpKernel {
       std::vector<Tensor> state(inputs.begin(), inputs.end());
 
       std::unique_ptr<CapturedFunction> captured_func;
+      CapturedFunction::Params fn_params;
+      fn_params.use_inter_op_parallelism = use_inter_op_parallelism_;
+      fn_params.is_multi_device_function = true;
+      fn_params.lib_def = lib_def_;
       OP_REQUIRES_OK_ASYNC(
           ctx,
           CapturedFunction::Create(reduce_func_, ctx, "other_arguments",
-                                   use_inter_op_parallelism_, &captured_func),
+                                   fn_params, &captured_func),
           done);
 
       IteratorContext::Params params(ctx);
@@ -742,6 +830,7 @@ class ReduceDatasetOp : public AsyncOpKernel {
   std::vector<PartialTensorShape> output_shapes_;
   bool use_inter_op_parallelism_;
   BackgroundWorker background_worker_;
+  std::shared_ptr<FunctionLibraryDefinition> lib_def_;
 };
 
 class OneShotIteratorOp : public AsyncOpKernel {
@@ -837,11 +926,12 @@ class OneShotIteratorOp : public AsyncOpKernel {
     TF_RETURN_IF_ERROR(
         ctx->resource_manager()->LookupOrCreate<IteratorResource>(
             cinfo->container(), cinfo->name(), iterator,
-            [lib, this, &flib_def, &pflr](IteratorResource** ret)
+            [ctx, lib, this, &flib_def, &pflr](IteratorResource** ret)
                 EXCLUSIVE_LOCKS_REQUIRED(mu_) {
                   *ret = new IteratorResource(
-                      output_dtypes_, output_shapes_, graph_def_version_,
-                      nullptr, std::move(flib_def), std::move(pflr), lib);
+                      ctx->env(), output_dtypes_, output_shapes_,
+                      graph_def_version_, nullptr, std::move(flib_def),
+                      std::move(pflr), lib);
                   return Status::OK();
                 }));
 
@@ -1163,12 +1253,24 @@ REGISTER_KERNEL_BUILDER(Name("MakeIterator").Device(DEVICE_CPU).Priority(2),
 REGISTER_KERNEL_BUILDER(
     Name("MakeIterator").Device(DEVICE_GPU).Priority(1).HostMemory("dataset"),
     MakeIteratorOp);
+REGISTER_KERNEL_BUILDER(Name("DeleteIterator").Device(DEVICE_CPU).Priority(2),
+                        DeleteIteratorOp);
+REGISTER_KERNEL_BUILDER(Name("DeleteIterator").Device(DEVICE_GPU).Priority(1),
+                        DeleteIteratorOp);
 REGISTER_KERNEL_BUILDER(
     Name("AnonymousIterator").Device(DEVICE_CPU).Priority(2),
     AnonymousIteratorHandleOp);
 REGISTER_KERNEL_BUILDER(
     Name("AnonymousIterator").Device(DEVICE_GPU).Priority(1),
     AnonymousIteratorHandleOp);
+REGISTER_KERNEL_BUILDER(
+    Name("AnonymousIteratorV2").Device(DEVICE_CPU).Priority(2),
+    AnonymousIteratorHandleOp);
+REGISTER_KERNEL_BUILDER(Name("AnonymousIteratorV2")
+                            .Device(DEVICE_GPU)
+                            .HostMemory("deleter")
+                            .Priority(1),
+                        AnonymousIteratorHandleOp);
 REGISTER_KERNEL_BUILDER(Name("DatasetToSingleElement").Device(DEVICE_CPU),
                         ToSingleElementOp);
 REGISTER_KERNEL_BUILDER(Name("ReduceDataset").Device(DEVICE_CPU),

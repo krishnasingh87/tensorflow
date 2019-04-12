@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cmath>
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/numeric_op.h"
 #include "tensorflow/core/framework/op.h"
@@ -45,7 +46,7 @@ Status FractionalPoolShapeFn(InferenceContext* c) {
     if (c->ValueKnown(d)) {
       // This must match the same logic in the kernel function in
       // core/kernels/fractional_max_pool_op.cc.
-      auto val = static_cast<int64>(floor(c->Value(d) / pooling_ratio[i]));
+      auto val = static_cast<int64>(std::floor(c->Value(d) / pooling_ratio[i]));
       if (val < 0) {
         return errors::InvalidArgument("Size computed for dim ", i,
                                        " is negative: ", val);
@@ -827,6 +828,7 @@ REGISTER_OP("MaxPoolWithArgmax")
     .Attr("strides: list(int) >= 4")
     .Attr("Targmax: {int32, int64} = DT_INT64")
     .Attr(GetPaddingAttrString())
+    .Attr("include_batch_in_index: bool = false")
     .Input("input: T")
     .Output("output: T")
     .Output("argmax: Targmax")
@@ -841,6 +843,7 @@ REGISTER_OP("MaxPoolGradWithArgmax")
     .Attr("ksize: list(int) >= 4")
     .Attr("strides: list(int) >= 4")
     .Attr(GetPaddingAttrString())
+    .Attr("include_batch_in_index: bool = false")
     .Attr("Targmax: {int32, int64}")
     .Input("input: T")
     .Input("grad: T")
@@ -855,6 +858,7 @@ REGISTER_OP("MaxPoolGradGradWithArgmax")
     .Attr("ksize: list(int) >= 4")
     .Attr("strides: list(int) >= 4")
     .Attr(GetPaddingAttrString())
+    .Attr("include_batch_in_index: bool = false")
     .Attr("Targmax: {int32, int64}")
     .Input("input: T")
     .Input("grad: T")
@@ -1934,7 +1938,7 @@ REGISTER_OP("_MklRelu")
     .Input("mkl_features: uint8")
     .Output("activations: T")
     .Output("mkl_activations: uint8")
-    .Attr("T: realnumbertype")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .SetShapeFn(shape_inference::UnchangedShape)
     .Doc(R"doc(
 MKL version of Relu operator. Uses MKL DNN APIs to implement Relu operator.
@@ -1950,7 +1954,7 @@ REGISTER_OP("_MklReluGrad")
     .Input("mkl_features: uint8")
     .Output("backprops: T")
     .Output("mkl_backprops: uint8")
-    .Attr("T: realnumbertype")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .SetShapeFn(shape_inference::MergeBothInputsShapeFn)
     .Doc(R"doc(
 MKL version of ReluGrad operator. Uses MKL DNN APIs to compute rectified
@@ -1965,7 +1969,7 @@ REGISTER_OP("_MklRelu6")
     .Input("mkl_features: uint8")
     .Output("activations: T")
     .Output("mkl_activations: uint8")
-    .Attr("T: realnumbertype")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .SetShapeFn(shape_inference::UnchangedShape)
     .Doc(R"doc(
 MKL version of Relu6 operator. Uses MKL DNN APIs to implement Relu6 operator.
@@ -1981,7 +1985,7 @@ REGISTER_OP("_MklRelu6Grad")
     .Input("mkl_features: uint8")
     .Output("backprops: T")
     .Output("mkl_backprops: uint8")
-    .Attr("T: realnumbertype")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .SetShapeFn(shape_inference::MergeBothInputsShapeFn)
     .Doc(R"doc(
 MKL version of Relu6Grad operator. Uses MKL DNN APIs to compute rectified
@@ -1996,7 +2000,7 @@ REGISTER_OP("_MklLeakyRelu")
     .Input("mkl_features: uint8")
     .Output("activations: T")
     .Output("mkl_activations: uint8")
-    .Attr("T: {half, float, double} = DT_FLOAT")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .Attr("alpha: float = 0.2")
     .SetShapeFn(shape_inference::UnchangedShape)
     .Doc(R"doc(
@@ -2014,7 +2018,7 @@ REGISTER_OP("_MklLeakyReluGrad")
     .Input("mkl_features: uint8")
     .Output("backprops: T")
     .Output("mkl_backprops: uint8")
-    .Attr("T: {half, float, double} = DT_FLOAT")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .Attr("alpha: float = 0.2")
     .SetShapeFn(shape_inference::MergeBothInputsShapeFn)
     .Doc(R"doc(
@@ -2030,7 +2034,7 @@ REGISTER_OP("_MklElu")
     .Input("mkl_features: uint8")
     .Output("activations: T")
     .Output("mkl_activations: uint8")
-    .Attr("T: realnumbertype")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .SetShapeFn(shape_inference::UnchangedShape)
     .Doc(R"doc(
 MKL version of Elu operator. Uses MKL DNN APIs to implement Elu operator.
@@ -2045,7 +2049,7 @@ REGISTER_OP("_MklEluGrad")
     .Input("mkl_features: uint8")
     .Output("backprops: T")
     .Output("mkl_backprops: uint8")
-    .Attr("T: realnumbertype")
+    .Attr("T: {float, bfloat16} = DT_FLOAT")
     .SetShapeFn(shape_inference::MergeBothInputsShapeFn)
     .Doc(R"doc(
 MKL version of EluGrad operator. Uses MKL DNN APIs to compute Elu
@@ -2098,7 +2102,7 @@ expected to invoke these operators.
 )doc");
 
 REGISTER_OP("_MklMaxPool")
-    .Attr("T: {float, half} = DT_FLOAT")
+    .Attr("T: {float, half, bfloat16} = DT_FLOAT")
     .Attr("ksize: list(int) >= 4")
     .Attr("strides: list(int) >= 4")
     .Attr(GetPaddingAttrString())
@@ -2124,7 +2128,7 @@ expected to invoke these operators.
 )doc");
 
 REGISTER_OP("_MklMaxPoolGrad")
-    .Attr("T: {float, half} = DT_FLOAT")
+    .Attr("T: {float, half, bfloat16} = DT_FLOAT")
     .Attr("ksize: list(int) >= 4")
     .Attr("strides: list(int) >= 4")
     .Attr("workspace_enabled: bool = false")
@@ -2164,7 +2168,7 @@ REGISTER_OP("_MklAvgPool")
     .Attr("strides: list(int) >= 4")
     .Attr(GetPaddingAttrString())
     .Attr(GetConvnetDataFormatAttrString())
-    .Attr("T: {float, half, double}")
+    .Attr("T: {float, half, double, bfloat16}")
     .SetShapeFn(shape_inference::AvgPoolShape)
     .Doc(R"doc(
 MKL version of AvgPool operator. Uses MKL DNN APIs to perform average pooling
@@ -2185,7 +2189,7 @@ REGISTER_OP("_MklAvgPoolGrad")
     .Attr("strides: list(int) >= 4")
     .Attr(GetPaddingAttrString())
     .Attr(GetConvnetDataFormatAttrString())
-    .Attr("T: {float, half, double}")
+    .Attr("T: {float, half, double, bfloat16}")
     .SetShapeFn([](InferenceContext* c) {
       ShapeHandle s;
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &s));
@@ -2210,7 +2214,7 @@ REGISTER_OP("_MklAvgPool3D")
     .Attr("strides: list(int) >= 5")
     .Attr(GetPaddingAttrString())
     .Attr(GetConvnet3dDataFormatAttrString())
-    .Attr("T: {float, half, double}")
+    .Attr("T: {float, half, double, bfloat16}")
     .SetShapeFn(shape_inference::Pool3DShape)
     .Doc(R"doc(
 MKL version of AvgPool3D operator. Uses MKL DNN APIs to perform average pooling
@@ -2231,7 +2235,7 @@ REGISTER_OP("_MklAvgPool3DGrad")
     .Attr("strides: list(int) >= 5")
     .Attr(GetPaddingAttrString())
     .Attr(GetConvnet3dDataFormatAttrString())
-    .Attr("T: {float, half, double}")
+    .Attr("T: {float, half, double, bfloat16}")
     .SetShapeFn([](InferenceContext* c) {
       ShapeHandle s;
       TF_RETURN_IF_ERROR(c->MakeShapeFromShapeTensor(0, &s));
@@ -2503,11 +2507,67 @@ NOTE Do not invoke this operator directly in Python. Graph rewrite pass is
 expected to invoke these operators.
 )doc");
 
+REGISTER_OP("_MklFusedBatchNormV2")
+    .Input("x: T")
+    .Input("scale: U")
+    .Input("offset: U")
+    .Input("mean: U")
+    .Input("variance: U")
+    .Input("mkl_x: uint8")
+    .Input("mkl_scale: uint8")
+    .Input("mkl_offset: uint8")
+    .Input("mkl_mean: uint8")
+    .Input("mkl_variance: uint8")
+    .Output("y: T")
+    .Output("batch_mean: U")
+    .Output("batch_variance: U")
+    .Output("reserve_space_1: U")
+    .Output("reserve_space_2: U")
+    .Output("mkl_y: uint8")
+    .Output("mkl_batch_mean: uint8")
+    .Output("mkl_batch_variance: uint8")
+    .Output("mkl_reserve_space_1: uint8")
+    .Output("mkl_reserve_space_2: uint8")
+    .Attr("T: {float}")
+    .Attr("U: {float}")
+    .Attr("epsilon: float = 0.0001")
+    .Attr(GetConvnetDataFormatAttrString())
+    .Attr("is_training: bool = true")
+    .SetShapeFn(shape_inference::FusedBatchNormShape);
+
+REGISTER_OP("_MklFusedBatchNormGradV2")
+    .Input("y_backprop: T")
+    .Input("x: T")
+    .Input("scale: float")
+    .Input("reserve_space_1: U")
+    .Input("reserve_space_2: U")
+    .Input("mkl_y_backprop: uint8")
+    .Input("mkl_x: uint8")
+    .Input("mkl_scale: uint8")
+    .Input("mkl_reserve_space_1: uint8")
+    .Input("mkl_reserve_space_2: uint8")
+    .Output("x_backprop: T")
+    .Output("scale_backprop: U")
+    .Output("offset_backprop: U")
+    .Output("reserve_space_3: U")
+    .Output("reserve_space_4: U")
+    .Output("mkl_x_backprop: uint8")
+    .Output("mkl_scale_backprop: uint8")
+    .Output("mkl_offset_backprop: uint8")
+    .Output("mkl_reserve_space_3: uint8")
+    .Output("mkl_reserve_space_4: uint8")
+    .Attr("T: {float}")
+    .Attr("U: {float}")
+    .Attr("epsilon: float = 0.0001")
+    .Attr(GetConvnetDataFormatAttrString())
+    .Attr("is_training: bool = true")
+    .SetShapeFn(shape_inference::FusedBatchNormGradShape);
+
 REGISTER_OP("_MklToTf")
     .Input("input: T")
     .Input("mkl_input: uint8")
     .Output("output: T")
-    .Attr("T: {half, float, double, qint8, quint8, qint32}")
+    .Attr("T: {half, float, double, bfloat16, qint8, quint8, qint32}")
     .Attr(GetConvnetDataFormat2D3DAttrString())
     .SetShapeFn(shape_inference::UnknownShape)
     .Doc(R"doc(
@@ -2528,8 +2588,8 @@ REGISTER_OP("_MklInputConversion")
     .Output("mkl_output_1: uint8")
     // All datatypes supported by element-wise ops
     .Attr(
-        "T: {half, float, double, uint8, int8, uint16, int16, int32, int64, "
-        "complex64, complex128}")
+        "T: {half, float, bfloat16, double, uint8, int8, uint16, int16, int32, "
+        "int64, complex64, complex128}")
     .Attr(GetConvnetDataFormat2D3DAttrString())
     .SetShapeFn(shape_inference::UnknownShape)
     .Doc(R"doc(
@@ -2560,6 +2620,7 @@ REGISTER_OP("QuantizedConv2DAndRequantize")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
       ShapeHandle unused;
@@ -2592,16 +2653,17 @@ REGISTER_OP("QuantizedConv2DWithBias")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
-      c->set_output(1, c->Scalar());
-      c->set_output(2, c->Scalar());
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
+      c->set_output(1, channel);
+      c->set_output(2, channel);
       return Status::OK();
     });
 
@@ -2625,14 +2687,15 @@ REGISTER_OP("QuantizedConv2DWithBiasAndRequantize")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
@@ -2657,15 +2720,16 @@ REGISTER_OP("QuantizedConv2DAndRelu")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      c->set_output(1, c->Scalar());
-      c->set_output(2, c->Scalar());
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(4), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      c->set_output(1, channel);
+      c->set_output(2, channel);
       return Status::OK();
     });
 
@@ -2687,13 +2751,14 @@ REGISTER_OP("QuantizedConv2DAndReluAndRequantize")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(4), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       c->set_output(1, c->Scalar());
@@ -2719,16 +2784,17 @@ REGISTER_OP("QuantizedConv2DWithBiasAndRelu")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
-      c->set_output(1, c->Scalar());
-      c->set_output(2, c->Scalar());
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
+      c->set_output(1, channel);
+      c->set_output(2, channel);
       return Status::OK();
     });
 
@@ -2753,14 +2819,15 @@ REGISTER_OP("QuantizedConv2DWithBiasAndReluAndRequantize")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
@@ -2787,16 +2854,17 @@ REGISTER_OP("QuantizedConv2DWithBiasSumAndRelu")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
-      c->set_output(1, c->Scalar());
-      c->set_output(2, c->Scalar());
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
+      c->set_output(1, channel);
+      c->set_output(2, channel);
       return Status::OK();
     });
 
@@ -2824,14 +2892,15 @@ REGISTER_OP("QuantizedConv2DWithBiasSumAndReluAndRequantize")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
@@ -2863,14 +2932,15 @@ REGISTER_OP("QuantizedConv2DWithBiasSignedSumAndReluAndRequantize")
     .Attr("strides: list(int)")
     .Attr(GetPaddingAttrString())
     .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .Attr("padding_list: list(int) = []")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
-      ShapeHandle unused;
+      ShapeHandle unused, channel;
       TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 1, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(4), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(5), 0, &unused));
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(6), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(6), 1, &channel));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(7), 0, &unused));
       TF_RETURN_IF_ERROR(c->WithRank(c->input(8), 0, &unused));
       c->set_output(1, c->Scalar());
@@ -2878,5 +2948,31 @@ REGISTER_OP("QuantizedConv2DWithBiasSignedSumAndReluAndRequantize")
       return Status::OK();
     });
 
-
+REGISTER_OP("QuantizedConv2DPerChannel")
+    .Input("input: Tinput")
+    .Input("filter: Tfilter")
+    .Input("min_input: float")
+    .Input("max_input: float")
+    .Input("min_filter: float")
+    .Input("max_filter: float")
+    .Output("output: out_type")
+    .Output("min_output: float")
+    .Output("max_output: float")
+    .Attr("Tinput: quantizedtype")
+    .Attr("Tfilter: quantizedtype")
+    .Attr("out_type: quantizedtype = DT_QINT32")
+    .Attr("strides: list(int)")
+    .Attr(GetPaddingAttrString())
+    .Attr("dilations: list(int) = [1, 1, 1, 1]")
+    .SetShapeFn([](InferenceContext* c) {
+      TF_RETURN_IF_ERROR(shape_inference::Conv2DShape(c));
+      ShapeHandle unused, channel;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(2), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(3), 0, &unused));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(4), 1, &channel));
+      TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(5), 1, &channel));
+      c->set_output(1, channel);
+      c->set_output(2, channel);
+      return Status::OK();
+    });
 }  // namespace tensorflow

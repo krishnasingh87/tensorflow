@@ -47,7 +47,7 @@ port::StatusOr<void*> GetDsoHandle(const string& name, const string& version) {
                               "'; dlerror: ", status.error_message());
 #if !defined(PLATFORM_WINDOWS)
   if (const char* ld_library_path = getenv("LD_LIBRARY_PATH")) {
-    message += absl::StrCat("; LD_LIRARY_PATH: ", ld_library_path);
+    message += absl::StrCat("; LD_LIBRARY_PATH: ", ld_library_path);
   }
 #endif
   LOG(INFO) << message;
@@ -158,27 +158,27 @@ port::StatusOr<void*> GetCudnnDsoHandle() {
 
 port::StatusOr<void*> GetRocblasDsoHandle() {
   static auto result = new auto(DsoLoader::GetRocblasDsoHandle());
-  return result;
+  return *result;
 }
 
 port::StatusOr<void*> GetMiopenDsoHandle() {
   static auto result = new auto(DsoLoader::GetMiopenDsoHandle());
-  return result;
+  return *result;
 }
 
 port::StatusOr<void*> GetRocfftDsoHandle() {
   static auto result = new auto(DsoLoader::GetRocfftDsoHandle());
-  return result;
+  return *result;
 }
 
 port::StatusOr<void*> GetRocrandDsoHandle() {
   static auto result = new auto(DsoLoader::GetRocrandDsoHandle());
-  return result;
+  return *result;
 }
 
 port::StatusOr<void*> GetHipDsoHandle() {
   static auto result = new auto(DsoLoader::GetHipDsoHandle());
-  return result;
+  return *result;
 }
 
 }  // namespace CachedDsoLoader
